@@ -1,0 +1,22 @@
+# =============================================================================
+# OrgOS GPU Inference Gateway — Python Dependencies
+# All versions are pinned exactly to ensure production reproducibility.
+# Update on the monthly patch schedule — test locally before updating on pod.
+# =============================================================================
+
+# ── Web framework ─────────────────────────────────────────────────────────
+fastapi==0.115.12          # FastAPI web framework — routes, validation, docs
+uvicorn[standard]==0.34.2  # ASGI server that runs FastAPI
+
+# ── Task queue ────────────────────────────────────────────────────────────
+celery==5.5.2              # Distributed task queue — manages inference jobs
+redis==5.2.1               # Redis client — used by Celery broker/backend and queue depth check
+
+# ── HTTP client ───────────────────────────────────────────────────────────
+httpx==0.28.1              # Async HTTP client — makes requests to Ollama API
+
+# ── Configuration ─────────────────────────────────────────────────────────
+python-dotenv==1.1.0       # Loads .env file into environment variables
+
+# ── Data validation ───────────────────────────────────────────────────────
+pydantic==2.11.5           # Request/response model validation (included with FastAPI)

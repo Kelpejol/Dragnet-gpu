@@ -1,0 +1,50 @@
+# =============================================================================
+# deployment/orgos-worker-light.service
+# systemd service for the Celery worker that handles 7B model jobs.
+# Listens on the dragnet_light queue only.
+#
+# Agents that use this worker:
+#   - Watcher (OrgOS GRC) — detects new documents in SharePoint
+#   - Classifier (OrgOS GRC) — labels extracted items
+#   - Monitor (OrgOS GRC) — checks evidence due dates
+#   - Alert agents (OrgOS GRC) — sends Teams notifications
+#   - Any future Dragnet agent that needs fast, lightweight responses
+#   - All embedding jobs (bge-m3 — document indexing and RAG search)
+#
+# This queue is kept separate from the heavy queue so that a long
+# 60-second extraction job cannot block a 3-second alert notification.
+#
+# Install:
+#   cp deployment/orgos-worker-light.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable orgos-worker-light
+#   systemctl start orgos-worker-light
+# =============================================================================
+
+[Unit]
+Description=Dragnet Light Celery Worker (7B model — Watcher, Classifier, Monitor, Alerts, Embeddings)
+After=network.target redis.service
+
+[Service]
+User=dragnet-deploy
+Group=dragnet-deploy
+WorkingDirectory=/workspace/orgos-gpu
+EnvironmentFile=/workspace/orgos-gpu/.env
+
+ExecStart=/usr/local/bin/celery \
+    -A app.queue.celery_app \
+    worker \
+    -Q orgos_light \
+    -c 1 \
+    -n light@%%h \
+    --loglevel=info
+
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

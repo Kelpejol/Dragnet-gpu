@@ -1,0 +1,48 @@
+# =============================================================================
+# deployment/orgos-worker-heavy.service
+# systemd service for the Celery worker that handles 14B model jobs.
+# Listens on the dragnet_heavy queue only.
+#
+# Agents that use this worker:
+#   - Extractor (OrgOS GRC)
+#   - Gap Analyzer (OrgOS GRC)
+#   - Policy Drafter (OrgOS GRC)
+#   - Any future Dragnet agent that requires deep document reasoning
+#
+# Install:
+#   cp deployment/orgos-worker-heavy.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable orgos-worker-heavy
+#   systemctl start orgos-worker-heavy
+# =============================================================================
+
+[Unit]
+Description=Dragnet Heavy Celery Worker (14B model — Extractor, Gap Analyzer, Drafter)
+After=network.target redis.service
+
+[Service]
+User=dragnet-deploy
+Group=dragnet-deploy
+WorkingDirectory=/workspace/orgos-gpu
+EnvironmentFile=/workspace/orgos-gpu/.env
+
+# -Q dragnet_heavy  — only process jobs from the heavy queue
+# -c 1              — one concurrent job at a time (Ollama is sequential)
+# -n heavy@%h       — worker name includes hostname for log identification
+ExecStart=/usr/local/bin/celery \
+    -A app.queue.celery_app \
+    worker \
+    -Q orgos_heavy \
+    -c 1 \
+    -n heavy@%%h \
+    --loglevel=info
+
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
