@@ -3,7 +3,7 @@
 FastAPI + Celery + Redis queue layer that sits between OrgOS agents and the Ollama inference server on RunPod.
 
 **Document:** DRG-DEPLOY-GPU-AI-2026 v1.0  
-**Owner:** Paul Olukayode — AI Enablement & Agentic Automation Lead  
+**Owner:** AI Enablement & Agentic Automation Lead  
 **Classification:** Internal — Engineering
 
 ---
@@ -133,15 +133,7 @@ Full interactive docs available at `/docs` in development mode.
 
 Per DRG-DEVOPS-PRO-CD-01-25:
 - **GitHub** — this repository (code, config, IaC)
-- **Azure Boards** — deployment tasks and incidents (managed by Friday)
+- **Azure Boards** — deployment tasks and incidents 
 - **SharePoint** — signed approvals, deployment log, monthly reports (OrgOS Engineering)
 
 ---
-
-## Secrets
-
-All production secrets are stored in Azure Key Vault.  
-Production API key custody: **Malik (DevOps)**  
-Break-glass access: **Adekunle Oyegbesan**  
-
-Never commit `.env` to this repository.
