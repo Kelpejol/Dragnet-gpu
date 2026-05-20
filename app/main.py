@@ -68,8 +68,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"Heavy model:  {settings.HEAVY_MODEL}")
     logger.info(f"Light model:  {settings.LIGHT_MODEL}")
     logger.info(f"Embed model:  {settings.EMBED_MODEL}")
-    logger.info(f"Ollama URL:   {settings.OLLAMA_BASE_URL}")
-    logger.info(f"Redis URL:    {settings.REDIS_URL.split('@')[-1]}")  # Log host only, not password
+    logger.info(f"RunPod endpoint: {settings.RUNPOD_ENDPOINT_ID}")
+    # logger.info(f"Redis URL:    {settings.REDIS_URL.split('@')[-1]}")  # Log host only, not password
     logger.info("=" * 60)
 
     # Validate all required secrets are present.
