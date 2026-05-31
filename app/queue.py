@@ -10,6 +10,7 @@ import asyncio
 import time
 import httpx
 import logging
+import redis as redis_client
 
 from app.config import settings
 
@@ -59,6 +60,15 @@ async def submit_job(model: str, prompt: str, model_tier: str = "heavy") -> tupl
 
     job_id = data.get("id")
     logger.info(f"[runpod] Job submitted: {job_id} | model_tier={model_tier} | model={model}")
+
+    # Record activity timestamp in Redis for the smart worker scaler
+    try:
+        r = redis_client.from_url("redis://localhost:6379/0", socket_connect_timeout=2)
+        r.set("last_ai_request", time.time())
+        r.close()
+    except Exception:
+        pass  # Never let Redis tracking break inference
+
     return job_id, status_url
 
 
