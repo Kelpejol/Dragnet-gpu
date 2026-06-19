@@ -22,14 +22,16 @@ COMPLETED = "COMPLETED"
 FAILED    = "FAILED"
 CANCELLED = "CANCELLED"
 
-
 @lru_cache(maxsize=1)
 def get_embedding_model():
-    """Load bge-m3 once and cache it — model stays in RAM."""
+    """Load bge-large-en-v1.5 once and cache it — model stays in RAM."""
     from fastembed import TextEmbedding
-    logger.info("[embed] Loading bge-m3 via fastembed...")
-    model = TextEmbedding(model_name="BAAI/bge-large-en-v1.5")
-    logger.info("[embed] bge-m3 loaded and ready.")
+    logger.info("[embed] Loading bge-large-en-v1.5 via fastembed...")
+    model = TextEmbedding(
+        model_name="BAAI/bge-large-en-v1.5",
+        cache_dir="/opt/dragnet-gpu/models"
+    )
+    logger.info("[embed] bge-large-en-v1.5 loaded and ready.")
     return model
 
 
