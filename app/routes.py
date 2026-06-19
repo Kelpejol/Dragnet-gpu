@@ -1,122 +1,165 @@
 # =============================================================================
-# app/queue.py — RunPod Serverless Client + Local Embedding
+# app/routes.py — FastAPI Route Definitions
 #
-# Generation routes to RunPod serverless endpoints:
-#   heavy → RUNPOD_HEAVY_ENDPOINT_ID (14B model)
-#   light → RUNPOD_LIGHT_ENDPOINT_ID (7B model)
-#
-# Embeddings run locally via fastembed (bge-m3 on CPU)
+# Endpoints:
+#   GET  /health       — liveness check (no auth required)
+#   POST /generate     — text generation via heavy or light model
+#   POST /embed        — text embedding via bge-m3 (runs locally on CPU)
+#   GET  /queue/depth  — returns 0 (RunPod manages queuing internally)
 # =============================================================================
 
-import asyncio
-import time
-import httpx
 import logging
-from functools import lru_cache
+import secrets
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.queue import run_inference, run_embedding
 
 logger = logging.getLogger(__name__)
 
-COMPLETED = "COMPLETED"
-FAILED    = "FAILED"
-CANCELLED = "CANCELLED"
+router = APIRouter()
+bearer_scheme = HTTPBearer()
 
 
-@lru_cache(maxsize=1)
-def get_embedding_model():
-    """Load bge-m3 once and cache it — model stays in RAM."""
-    from fastembed import TextEmbedding
-    logger.info("[embed] Loading bge-m3 via fastembed...")
-    model = TextEmbedding(model_name="BAAI/bge-m3")
-    logger.info("[embed] bge-m3 loaded and ready.")
-    return model
+def verify_api_key(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> str:
+    if not secrets.compare_digest(
+        credentials.credentials, settings.INFERENCE_API_KEY
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return credentials.credentials
 
 
-async def submit_job(model: str, prompt: str, model_tier: str = "heavy") -> tuple[str, str]:
-    if model_tier == "heavy":
-        run_url    = settings.RUNPOD_HEAVY_RUN_URL
-        status_url = settings.RUNPOD_HEAVY_STATUS_URL
-    else:
-        run_url    = settings.RUNPOD_LIGHT_RUN_URL
-        status_url = settings.RUNPOD_LIGHT_STATUS_URL
+class GenerateRequest(BaseModel):
+    prompt:     str = Field(..., description="The prompt to send to the model")
+    model_tier: str = Field(
+        default="heavy",
+        description="'heavy' (14B) or 'light' (7B)",
+        pattern="^(heavy|light)$",
+    )
 
-    payload = {
-        "input": {
-            "model":  model,
-            "prompt": prompt,
-        }
+
+class GenerateResponse(BaseModel):
+    output:     str
+    model:      str
+    model_tier: str
+    endpoint:   str
+
+
+class EmbedRequest(BaseModel):
+    text: str = Field(..., description="Text to generate embedding for")
+
+
+class EmbedResponse(BaseModel):
+    embedding:  list[float]
+    model:      str
+    dimensions: int
+
+
+@router.get("/health", summary="Health check", tags=["System"])
+async def health_check():
+    return {
+        "status": "ok",
+        "env":    settings.ENV,
+        "endpoints": {
+            "heavy": {
+                "id":    settings.RUNPOD_HEAVY_ENDPOINT_ID,
+                "model": settings.HEAVY_MODEL,
+            },
+            "light": {
+                "id":    settings.RUNPOD_LIGHT_ENDPOINT_ID,
+                "model": settings.LIGHT_MODEL,
+            },
+        },
+        "embed_model": settings.EMBED_MODEL,
     }
 
-    headers = {
-        "Authorization": f"Bearer {settings.RUNPOD_API_KEY}",
-        "Content-Type":  "application/json",
-    }
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(run_url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+@router.post("/generate", response_model=GenerateResponse, summary="Run inference", tags=["Inference"])
+async def generate(
+    request: GenerateRequest,
+    token: str = Depends(verify_api_key),
+):
+    if not request.prompt.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Prompt cannot be empty.",
+        )
 
-    job_id = data.get("id")
-    logger.info(f"[runpod] Job submitted: {job_id} | model_tier={model_tier} | model={model}")
-    return job_id, status_url
+    model    = settings.HEAVY_MODEL if request.model_tier == "heavy" else settings.LIGHT_MODEL
+    endpoint = settings.RUNPOD_HEAVY_ENDPOINT_ID if request.model_tier == "heavy" else settings.RUNPOD_LIGHT_ENDPOINT_ID
 
-
-async def poll_job(job_id: str, status_base_url: str) -> dict:
-    headers = {"Authorization": f"Bearer {settings.RUNPOD_API_KEY}"}
-    url     = f"{status_base_url}/{job_id}"
-    start   = time.time()
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        while True:
-            elapsed = time.time() - start
-
-            if elapsed > settings.POLL_TIMEOUT:
-                raise TimeoutError(
-                    f"Job {job_id} did not complete within {settings.POLL_TIMEOUT}s."
-                )
-
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-
-            status = data.get("status")
-            logger.info(f"[runpod] Job {job_id} status={status} elapsed={elapsed:.1f}s")
-
-            if status == COMPLETED:
-                return data
-
-            if status in (FAILED, CANCELLED):
-                error = data.get("error", "Unknown error")
-                raise RuntimeError(f"Job {job_id} {status}: {error}")
-
-            await asyncio.sleep(settings.POLL_INTERVAL)
-
-
-def extract_text(result: dict) -> str:
     try:
-        return result["output"][0]["choices"][0]["text"]
-    except (KeyError, IndexError, TypeError) as exc:
-        logger.error(f"Failed to extract text from result: {result}")
-        raise ValueError(f"Unexpected response format from RunPod: {exc}")
+        logger.info(
+            f"[generate] tier={request.model_tier} "
+            f"endpoint={endpoint} model={model} "
+            f"prompt_length={len(request.prompt)}"
+        )
+        output = await run_inference(model, request.prompt, request.model_tier)
+        return GenerateResponse(
+            output=output,
+            model=model,
+            model_tier=request.model_tier,
+            endpoint=endpoint,
+        )
+    except TimeoutError as exc:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    except Exception as exc:
+        logger.exception(f"Inference failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Inference request failed. Check server logs.",
+        )
 
 
-async def run_inference(model: str, prompt: str, model_tier: str = "heavy") -> str:
-    job_id, status_url = await submit_job(model, prompt, model_tier)
-    result = await poll_job(job_id, status_url)
-    return extract_text(result)
+@router.post("/embed", response_model=EmbedResponse, summary="Generate embedding", tags=["Inference"])
+async def embed(
+    request: EmbedRequest,
+    token: str = Depends(verify_api_key),
+):
+    if not request.text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Text cannot be empty.",
+        )
+
+    try:
+        logger.info(f"[embed] text_length={len(request.text)}")
+        vector = await run_embedding(request.text)
+        return EmbedResponse(
+            embedding=vector,
+            model=settings.EMBED_MODEL,
+            dimensions=len(vector),
+        )
+    except TimeoutError as exc:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    except Exception as exc:
+        logger.exception(f"Embedding failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Embedding request failed. Check server logs.",
+        )
 
 
-async def run_embedding(text: str) -> list[float]:
-    """Generate embedding locally using fastembed + bge-m3 on CPU."""
-    loop = asyncio.get_event_loop()
-    embedding_model = get_embedding_model()
-
-    def _embed():
-        embeddings = list(embedding_model.embed([text]))
-        return embeddings[0].tolist()
-
-    vector = await loop.run_in_executor(None, _embed)
-    logger.info(f"[embed] Generated vector dimensions={len(vector)}")
-    return vector
+@router.get("/queue/depth", summary="Queue depth", tags=["System"])
+async def queue_depth(token: str = Depends(verify_api_key)):
+    return {
+        "note": "Queuing is managed by RunPod serverless internally.",
+        "endpoints": {
+            "heavy": settings.RUNPOD_HEAVY_ENDPOINT_ID,
+            "light": settings.RUNPOD_LIGHT_ENDPOINT_ID,
+        },
+        "total_pending": 0,
+    }

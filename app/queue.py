@@ -1,16 +1,18 @@
 # =============================================================================
-# app/queue.py — RunPod Serverless Client
+# app/queue.py — RunPod Serverless Client + Local Embedding
 #
-# Routes requests to the correct endpoint based on model tier:
+# Generation routes to RunPod serverless endpoints:
 #   heavy → RUNPOD_HEAVY_ENDPOINT_ID (14B model)
 #   light → RUNPOD_LIGHT_ENDPOINT_ID (7B model)
-#   embed → RUNPOD_LIGHT_ENDPOINT_ID (bge-m3 embedding model)
+#
+# Embeddings run locally via fastembed (bge-m3 on CPU)
 # =============================================================================
 
 import asyncio
 import time
 import httpx
 import logging
+from functools import lru_cache
 
 from app.config import settings
 
@@ -19,6 +21,16 @@ logger = logging.getLogger(__name__)
 COMPLETED = "COMPLETED"
 FAILED    = "FAILED"
 CANCELLED = "CANCELLED"
+
+
+@lru_cache(maxsize=1)
+def get_embedding_model():
+    """Load bge-m3 once and cache it — model stays in RAM."""
+    from fastembed import TextEmbedding
+    logger.info("[embed] Loading bge-m3 via fastembed...")
+    model = TextEmbedding(model_name="BAAI/bge-m3")
+    logger.info("[embed] bge-m3 loaded and ready.")
+    return model
 
 
 async def submit_job(model: str, prompt: str, model_tier: str = "heavy") -> tuple[str, str]:
@@ -48,33 +60,6 @@ async def submit_job(model: str, prompt: str, model_tier: str = "heavy") -> tupl
 
     job_id = data.get("id")
     logger.info(f"[runpod] Job submitted: {job_id} | model_tier={model_tier} | model={model}")
-    return job_id, status_url
-
-
-async def submit_embed_job(text: str) -> tuple[str, str]:
-    """Submit an embedding job to the light endpoint."""
-    run_url    = settings.RUNPOD_LIGHT_RUN_URL
-    status_url = settings.RUNPOD_LIGHT_STATUS_URL
-
-    payload = {
-        "input": {
-            "model": settings.EMBED_MODEL,
-            "input": text,
-        }
-    }
-
-    headers = {
-        "Authorization": f"Bearer {settings.RUNPOD_API_KEY}",
-        "Content-Type":  "application/json",
-    }
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(run_url, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-
-    job_id = data.get("id")
-    logger.info(f"[runpod] Embed job submitted: {job_id}")
     return job_id, status_url
 
 
@@ -117,23 +102,6 @@ def extract_text(result: dict) -> str:
         raise ValueError(f"Unexpected response format from RunPod: {exc}")
 
 
-def extract_embedding(result: dict) -> list[float]:
-    """Extract embedding vector — tries multiple response formats."""
-    try:
-        return result["output"]["data"][0]["embedding"]
-    except (KeyError, IndexError, TypeError):
-        pass
-    try:
-        return result["output"][0]["embedding"]
-    except (KeyError, IndexError, TypeError):
-        pass
-    try:
-        return result["output"]["embedding"]
-    except (KeyError, IndexError, TypeError) as exc:
-        logger.error(f"Unexpected embedding response format: {result}")
-        raise ValueError(f"Could not extract embedding from RunPod response: {exc}")
-
-
 async def run_inference(model: str, prompt: str, model_tier: str = "heavy") -> str:
     job_id, status_url = await submit_job(model, prompt, model_tier)
     result = await poll_job(job_id, status_url)
@@ -141,7 +109,14 @@ async def run_inference(model: str, prompt: str, model_tier: str = "heavy") -> s
 
 
 async def run_embedding(text: str) -> list[float]:
-    """Full embedding pipeline — submit job, poll, return vector."""
-    job_id, status_url = await submit_embed_job(text)
-    result = await poll_job(job_id, status_url)
-    return extract_embedding(result)
+    """Generate embedding locally using fastembed + bge-m3 on CPU."""
+    loop = asyncio.get_event_loop()
+    embedding_model = get_embedding_model()
+
+    def _embed():
+        embeddings = list(embedding_model.embed([text]))
+        return embeddings[0].tolist()
+
+    vector = await loop.run_in_executor(None, _embed)
+    logger.info(f"[embed] Generated vector dimensions={len(vector)}")
+    return vector
