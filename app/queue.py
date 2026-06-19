@@ -120,3 +120,29 @@ async def run_embedding(text: str) -> list[float]:
     vector = await loop.run_in_executor(None, _embed)
     logger.info(f"[embed] Generated vector dimensions={len(vector)}")
     return vector
+
+
+async def run_chat(messages: list[dict], max_tokens: int = 1000) -> str:
+    """Call Azure OpenAI GPT-4o mini."""
+    url = (
+        f"{settings.AZURE_OPENAI_ENDPOINT.rstrip('/')}"
+        f"/openai/deployments/{settings.AZURE_OPENAI_DEPLOYMENT}"
+        f"/chat/completions?api-version={settings.AZURE_OPENAI_API_VERSION}"
+    )
+
+    headers = {
+        "api-key":      settings.AZURE_OPENAI_KEY,
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "messages":   messages,
+        "max_tokens": max_tokens,
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    return data["choices"][0]["message"]["content"]

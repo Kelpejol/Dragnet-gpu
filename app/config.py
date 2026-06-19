@@ -21,7 +21,11 @@ class Settings:
 
     # Light endpoint — 7B model (Watcher, Classifier, Monitor, Alerts)
     RUNPOD_LIGHT_ENDPOINT_ID: str = os.environ.get("RUNPOD_LIGHT_ENDPOINT_ID", "xjp0viock5cnn6")
-
+    # ── Azure OpenAI ──────────────────────────────────────────────────────────────
+    AZURE_OPENAI_ENDPOINT:   str = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+    AZURE_OPENAI_KEY:        str = os.environ.get("AZURE_OPENAI_KEY", "")
+    AZURE_OPENAI_DEPLOYMENT: str = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "Gpt 4o mini")
+    AZURE_OPENAI_API_VERSION: str = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
     @property
     def RUNPOD_HEAVY_RUN_URL(self) -> str:
         return f"https://api.runpod.ai/v2/{self.RUNPOD_HEAVY_ENDPOINT_ID}/run"

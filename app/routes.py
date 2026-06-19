@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.queue import run_inference, run_embedding
-
+from app.queue import run_inference, run_embedding, run_chat
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -64,24 +64,41 @@ class EmbedResponse(BaseModel):
     dimensions: int
 
 
+class ChatMessage(BaseModel):
+    role:    str = Field(..., description="system, user or assistant")
+    content: str = Field(..., description="Message content")
+
+
+class ChatRequest(BaseModel):
+    messages:   list[ChatMessage] = Field(..., description="Conversation messages")
+    max_tokens: int = Field(default=1000, description="Maximum tokens to generate")
+
+
+class ChatResponse(BaseModel):
+    output:     str
+    model:      str
+    deployment: str
+
+
 @router.get("/health", summary="Health check", tags=["System"])
 async def health_check():
     return {
         "status": "ok",
         "env":    settings.ENV,
-        "endpoints": {
-            "heavy": {
-                "id":    settings.RUNPOD_HEAVY_ENDPOINT_ID,
-                "model": settings.HEAVY_MODEL,
+        "providers": {
+            "runpod": {
+                "heavy": {"id": settings.RUNPOD_HEAVY_ENDPOINT_ID, "model": settings.HEAVY_MODEL},
+                "light": {"id": settings.RUNPOD_LIGHT_ENDPOINT_ID, "model": settings.LIGHT_MODEL},
             },
-            "light": {
-                "id":    settings.RUNPOD_LIGHT_ENDPOINT_ID,
-                "model": settings.LIGHT_MODEL,
+            "azure_openai": {
+                "deployment": settings.AZURE_OPENAI_DEPLOYMENT,
+                "endpoint":   settings.AZURE_OPENAI_ENDPOINT,
+            },
+            "local": {
+                "embed_model": settings.EMBED_MODEL,
             },
         },
-        "embed_model": settings.EMBED_MODEL,
     }
-
 
 @router.post("/generate", response_model=GenerateResponse, summary="Run inference", tags=["Inference"])
 async def generate(
@@ -152,6 +169,39 @@ async def embed(
             detail="Embedding request failed. Check server logs.",
         )
 
+
+
+@router.post("/chat", response_model=ChatResponse, summary="Azure OpenAI chat", tags=["Inference"])
+async def chat(
+    request: ChatRequest,
+    token: str = Depends(verify_api_key),
+):
+    if not request.messages:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Messages cannot be empty.",
+        )
+
+    try:
+        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        logger.info(f"[chat] messages={len(messages)} max_tokens={request.max_tokens}")
+        output = await run_chat(messages, request.max_tokens)
+        return ChatResponse(
+            output=output,
+            model="gpt-4o-mini",
+            deployment=settings.AZURE_OPENAI_DEPLOYMENT,
+        )
+    except TimeoutError as exc:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    except Exception as exc:
+        logger.exception(f"Chat failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Chat request failed. Check server logs.",
+        )
+    
 
 @router.get("/queue/depth", summary="Queue depth", tags=["System"])
 async def queue_depth(token: str = Depends(verify_api_key)):
