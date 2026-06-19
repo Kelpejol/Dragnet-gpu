@@ -3,7 +3,8 @@
 #
 # Endpoints:
 #   GET  /health       — liveness check (no auth required)
-#   POST /generate     — submit inference request, wait for response
+#   POST /generate     — text generation via heavy or light model
+#   POST /embed        — text embedding via bge-m3
 #   GET  /queue/depth  — returns 0 (RunPod manages queuing internally)
 # =============================================================================
 
@@ -15,7 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.queue import run_inference
+from app.queue import run_inference, run_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ class GenerateRequest(BaseModel):
     prompt:     str = Field(..., description="The prompt to send to the model")
     model_tier: str = Field(
         default="heavy",
-        description="'heavy' (14B) routes to heavy endpoint, 'light' (7B) routes to light endpoint",
+        description="'heavy' (14B) or 'light' (7B)",
         pattern="^(heavy|light)$",
     )
 
@@ -55,6 +56,16 @@ class GenerateResponse(BaseModel):
     model:      str
     model_tier: str
     endpoint:   str
+
+
+class EmbedRequest(BaseModel):
+    text: str = Field(..., description="Text to generate embedding for")
+
+
+class EmbedResponse(BaseModel):
+    embedding:  list[float]
+    model:      str
+    dimensions: int
 
 
 # =============================================================================
@@ -91,7 +102,6 @@ async def generate(
             detail="Prompt cannot be empty.",
         )
 
-    # Select model and endpoint based on tier
     if request.model_tier == "heavy":
         model    = settings.HEAVY_MODEL
         endpoint = settings.RUNPOD_HEAVY_ENDPOINT_ID
@@ -125,6 +135,38 @@ async def generate(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Inference request failed. Check server logs.",
+        )
+
+
+@router.post("/embed", response_model=EmbedResponse, summary="Generate embedding", tags=["Inference"])
+async def embed(
+    request: EmbedRequest,
+    token: str = Depends(verify_api_key),
+):
+    if not request.text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Text cannot be empty.",
+        )
+
+    try:
+        logger.info(f"[embed] text_length={len(request.text)}")
+        vector = await run_embedding(request.text)
+        return EmbedResponse(
+            embedding=vector,
+            model=settings.EMBED_MODEL,
+            dimensions=len(vector),
+        )
+
+    except TimeoutError as exc:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    except Exception as exc:
+        logger.exception(f"Embedding failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Embedding request failed. Check server logs.",
         )
 
 

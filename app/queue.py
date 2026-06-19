@@ -4,6 +4,7 @@
 # Routes requests to the correct endpoint based on model tier:
 #   heavy → RUNPOD_HEAVY_ENDPOINT_ID (14B model)
 #   light → RUNPOD_LIGHT_ENDPOINT_ID (7B model)
+#   embed → RUNPOD_LIGHT_ENDPOINT_ID (bge-m3 embedding model)
 # =============================================================================
 
 import asyncio
@@ -21,18 +22,6 @@ CANCELLED = "CANCELLED"
 
 
 async def submit_job(model: str, prompt: str, model_tier: str = "heavy") -> tuple[str, str]:
-    """
-    Submit an inference job to the correct RunPod endpoint.
-
-    Args:
-        model:      The Ollama model name
-        prompt:     The prompt to send to the model
-        model_tier: "heavy" or "light" — determines which endpoint to use
-
-    Returns:
-        Tuple of (job_id, status_base_url)
-    """
-    # Route to the correct endpoint based on model tier
     if model_tier == "heavy":
         run_url    = settings.RUNPOD_HEAVY_RUN_URL
         status_url = settings.RUNPOD_HEAVY_STATUS_URL
@@ -59,21 +48,37 @@ async def submit_job(model: str, prompt: str, model_tier: str = "heavy") -> tupl
 
     job_id = data.get("id")
     logger.info(f"[runpod] Job submitted: {job_id} | model_tier={model_tier} | model={model}")
+    return job_id, status_url
 
+
+async def submit_embed_job(text: str) -> tuple[str, str]:
+    """Submit an embedding job to the light endpoint."""
+    run_url    = settings.RUNPOD_LIGHT_RUN_URL
+    status_url = settings.RUNPOD_LIGHT_STATUS_URL
+
+    payload = {
+        "input": {
+            "model": settings.EMBED_MODEL,
+            "input": text,
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {settings.RUNPOD_API_KEY}",
+        "Content-Type":  "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(run_url, json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    job_id = data.get("id")
+    logger.info(f"[runpod] Embed job submitted: {job_id}")
     return job_id, status_url
 
 
 async def poll_job(job_id: str, status_base_url: str) -> dict:
-    """
-    Poll RunPod for the result of a submitted job.
-
-    Args:
-        job_id:          The job ID returned by submit_job()
-        status_base_url: The status URL for the correct endpoint
-
-    Returns:
-        The completed job result dict from RunPod.
-    """
     headers = {"Authorization": f"Bearer {settings.RUNPOD_API_KEY}"}
     url     = f"{status_base_url}/{job_id}"
     start   = time.time()
@@ -105,18 +110,6 @@ async def poll_job(job_id: str, status_base_url: str) -> dict:
 
 
 def extract_text(result: dict) -> str:
-    """
-    Extract generated text from a completed RunPod job result.
-
-    The Hub worker returns OpenAI-compatible format:
-    {
-        "output": [{
-            "choices": [{
-                "text": "generated text here"
-            }]
-        }]
-    }
-    """
     try:
         return result["output"][0]["choices"][0]["text"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -124,18 +117,31 @@ def extract_text(result: dict) -> str:
         raise ValueError(f"Unexpected response format from RunPod: {exc}")
 
 
+def extract_embedding(result: dict) -> list[float]:
+    """Extract embedding vector — tries multiple response formats."""
+    try:
+        return result["output"]["data"][0]["embedding"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    try:
+        return result["output"][0]["embedding"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    try:
+        return result["output"]["embedding"]
+    except (KeyError, IndexError, TypeError) as exc:
+        logger.error(f"Unexpected embedding response format: {result}")
+        raise ValueError(f"Could not extract embedding from RunPod response: {exc}")
+
+
 async def run_inference(model: str, prompt: str, model_tier: str = "heavy") -> str:
-    """
-    Full inference pipeline — submit job to correct endpoint, poll, return text.
-
-    Args:
-        model:      Ollama model name
-        prompt:     The prompt string
-        model_tier: "heavy" or "light"
-
-    Returns:
-        The generated text string.
-    """
     job_id, status_url = await submit_job(model, prompt, model_tier)
     result = await poll_job(job_id, status_url)
     return extract_text(result)
+
+
+async def run_embedding(text: str) -> list[float]:
+    """Full embedding pipeline — submit job, poll, return vector."""
+    job_id, status_url = await submit_embed_job(text)
+    result = await poll_job(job_id, status_url)
+    return extract_embedding(result)
