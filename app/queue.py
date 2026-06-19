@@ -28,7 +28,7 @@ def get_embedding_model():
     """Load bge-m3 once and cache it — model stays in RAM."""
     from fastembed import TextEmbedding
     logger.info("[embed] Loading bge-m3 via fastembed...")
-    model = TextEmbedding(model_name="BAAI/bge-m3")
+    model = TextEmbedding(model_name="BAAI/bge-large-en-v1.5")
     logger.info("[embed] bge-m3 loaded and ready.")
     return model
 

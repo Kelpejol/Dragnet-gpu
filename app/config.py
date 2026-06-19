@@ -41,7 +41,7 @@ class Settings:
     # ── Model identifiers ─────────────────────────────────────────────────────
     HEAVY_MODEL: str = os.environ.get("HEAVY_MODEL", "qwen2.5:14b-instruct-q4_K_M")
     LIGHT_MODEL:  str = os.environ.get("LIGHT_MODEL",  "qwen2.5:7b-instruct-q4_K_M")
-    EMBED_MODEL:  str = os.environ.get("EMBED_MODEL",  "bge-m3")
+    EMBED_MODEL: str = os.environ.get("EMBED_MODEL", "BAAI/bge-large-en-v1.5")
 
     # ── Polling ───────────────────────────────────────────────────────────────
     POLL_TIMEOUT:  int = int(os.environ.get("POLL_TIMEOUT",  "600"))
